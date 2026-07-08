@@ -61,13 +61,23 @@ st.markdown(
     html, body, [class*="css"] { font-family: 'Noto Sans SC', 'Noto Sans JP', sans-serif; }
     .stApp { background: linear-gradient(160deg, #f7f8ff 0%, #ffffff 45%, #fbfaff 100%); }
 
-    .stTabs [data-baseweb="tab-list"] { gap: 12px; }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 16px; background: #f0f1fb; padding: 14px 14px 0 14px;
+        border-radius: 20px 20px 0 0; margin-bottom: 4px;
+    }
     .stTabs [data-baseweb="tab"] {
-        height: 56px; white-space: pre-wrap; border-radius: 12px 12px 0 0;
-        font-size: 1.1rem; font-weight: 700; padding: 8px 22px; background-color: #f0f2f6;
+        height: 68px; white-space: pre-wrap; border-radius: 16px 16px 0 0;
+        font-size: 1.3rem; font-weight: 800; padding: 10px 30px;
+        background-color: #ffffff; box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        border: 2px solid transparent;
     }
     .stTabs [aria-selected="true"] {
-        background: linear-gradient(135deg, #6D5DF6, #4C6FFF); color: white !important;
+        background: linear-gradient(135deg, #6D5DF6, #4C6FFF) !important; color: white !important;
+        box-shadow: 0 6px 18px rgba(108,93,246,0.4); border: 2px solid #4C6FFF;
+    }
+    .stTabs [data-baseweb="tab-panel"] {
+        background: #ffffff; border-radius: 0 0 20px 20px; padding: 24px 4px 4px 4px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.04);
     }
 
     .kpi-row { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; justify-content:center; }
@@ -284,6 +294,21 @@ def masked_count_for(card, words):
     upper_bound = max(len(words) - 1, 1)
     n = min(1 + mastery, 4, upper_bound)
     return max(n, 1)
+
+
+def get_maskable_indices(words):
+    """排除看起来像人名/专有名词的词（句中非首位、首字母大写的词），避免挖空考人名这种死记硬背的东西"""
+    candidates = []
+    for i, w in enumerate(words):
+        core = w.strip(".,!?;:\"'()")
+        looks_like_proper_noun = (
+            i > 0 and core[:1].isupper() and core.isalpha() and core.lower() != "i"
+        )
+        if not looks_like_proper_noun:
+            candidates.append(i)
+    if not candidates:
+        candidates = list(range(len(words)))  # 万一整句都被判定成专有名词，退回全部可选，避免无空可挖
+    return candidates
 
 
 def cleanup_duplicate_cards(ignore_board=False):
@@ -538,6 +563,11 @@ if st.session_state.session_active:
         save_history(st.session_state.study_history)
         st.session_state.session_active = False
         st.session_state.session_start_time = None
+        # 清空上次的范围选择，避免下次设置画面里残留旧的板块/学期选中状态
+        st.session_state.setup_boards = set()
+        st.session_state.setup_semesters = set()
+        for mkey in ["card_flip", "card_mask", "card_choice"]:
+            st.session_state[mkey] = None
         st.sidebar.success("✅ 已记录本次学习！")
         st.rerun()
 
@@ -717,6 +747,34 @@ def render_meta(card):
     )
 
 
+def render_quick_edit(card, context_key):
+    """直接修改当前正在看的这一条题目，按 uid 精确定位，不用去底部搜索（避免同编号多条内容时搜错）"""
+    uid = card["uid"]
+    with st.expander("✏️ 这题有错？直接改这一条"):
+        with st.form(key=f"quickedit_{context_key}_{uid}"):
+            new_id = st.number_input("编号 id", value=int(card["id"]), step=1, key=f"qe_id_{context_key}_{uid}")
+            new_category = st.text_input("大类 category", value=card.get("category", ""), key=f"qe_cat_{context_key}_{uid}")
+            new_japanese = st.text_area("日语 japanese", value=card.get("japanese", ""), height=70, key=f"qe_jp_{context_key}_{uid}")
+            new_chinese = st.text_area("中文 chinese", value=card.get("chinese", ""), height=70, key=f"qe_cn_{context_key}_{uid}")
+            new_english = st.text_area("英语 english_standard", value=card.get("english_standard", ""), height=70, key=f"qe_en_{context_key}_{uid}")
+            new_lecture = st.text_area("名师解说 teacher_lecture", value=card.get("teacher_lecture", ""), height=90, key=f"qe_lec_{context_key}_{uid}")
+            save_clicked = st.form_submit_button("💾 保存修改", use_container_width=True)
+
+        if save_clicked:
+            card["id"] = int(new_id)
+            card["category"] = new_category.strip() or "未分类"
+            card["japanese"] = new_japanese.strip()
+            card["chinese"] = new_chinese.strip()
+            card["english_standard"] = new_english.strip()
+            card["teacher_lecture"] = new_lecture.strip()
+            new_uid = make_uid(card)
+            if new_uid != card["uid"]:
+                remove_from_weak(card["uid"])
+                card["uid"] = new_uid
+            save_data(st.session_state.flashcards)
+            st.success("✅ 已保存，点「换一题/下一题」后新内容就会用上。")
+
+
 def render_timer(state_key, label, color):
     start_ms = int(st.session_state.get(f"{state_key}_start", time.time()) * 1000)
     components.html(
@@ -747,6 +805,7 @@ with tab_map["flip"]:
     card = st.session_state.card_flip
     uid = card["uid"]
     render_meta(card)
+    render_quick_edit(card, "flip")
     render_timer("card_flip", "⏱ 本题用时　", "#e08a2c")
 
     japanese_html = card["japanese"].replace("'", "&#39;")
@@ -822,6 +881,7 @@ with tab_map["mask"]:
     card = st.session_state.card_mask
     uid = card["uid"]
     render_meta(card)
+    render_quick_edit(card, "mask")
     render_timer("card_mask", "⏱ 本题用时　", "#e08a2c")
 
     if uid in st.session_state.weak_uids:
@@ -831,8 +891,9 @@ with tab_map["mask"]:
 
     mask_key = f"mask_{uid}"
     if mask_key not in st.session_state:
-        n = masked_count_for(card, words) if words else 0
-        st.session_state[mask_key] = sorted(random.sample(range(len(words)), n)) if n else []
+        maskable = get_maskable_indices(words)
+        n = min(masked_count_for(card, words), len(maskable)) if words else 0
+        st.session_state[mask_key] = sorted(random.sample(maskable, n)) if n else []
     masked_indices = st.session_state[mask_key]
 
     hint_shown_key = f"hintshown_{uid}"
@@ -920,6 +981,7 @@ with tab_map["choice"]:
     card = st.session_state.card_choice
     uid = card["uid"]
     render_meta(card)
+    render_quick_edit(card, "choice")
     render_timer("card_choice", "⏱ 本题用时　", "#e08a2c")
 
     st.markdown(
@@ -945,7 +1007,7 @@ with tab_map["choice"]:
     selected = st.radio("选项：", options, key=choice_key, index=None)
 
     answered_key = f"answered_{uid}"
-    if st.button("✅ 提交答案", key=f"submit_{uid}"):
+    if st.button("✅ 提交答案", key=f"submit_{uid}", use_container_width=True):
         st.session_state[answered_key] = True
 
     if st.session_state.get(answered_key):
@@ -959,7 +1021,7 @@ with tab_map["choice"]:
         st.markdown(f"<div class='lecture-box'><b>名师语感与脉络拆解：</b>{card['teacher_lecture']}</div>", unsafe_allow_html=True)
 
     st.write("")
-    if st.button("➡️ 换一题", key=f"next_choice_{uid}", type="primary"):
+    if st.button("➡️ 下一题", key=f"next_choice_{uid}", type="primary", use_container_width=True):
         pick_card("card_choice", filtered_pool, exclude_uid=uid)
         st.rerun()
 
