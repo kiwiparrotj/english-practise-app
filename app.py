@@ -219,8 +219,9 @@ def normalize_text(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()).lower()
 
 
-def dedup_key(board, cid, japanese, english):
-    return (board, str(cid), normalize_text(japanese), normalize_text(english))
+def dedup_key(board, cid, japanese, english, ignore_board=False):
+    b = "" if ignore_board else board
+    return (b, str(cid), normalize_text(japanese), normalize_text(english))
 
 
 def merge_new_cards(existing, new_df, board):
@@ -285,19 +286,19 @@ def masked_count_for(card, words):
     return max(n, 1)
 
 
-def cleanup_duplicate_cards():
-    """清理题库里已经存在的重复题目（同板块+同编号+日语英语规整后一致），保留第一条"""
+def cleanup_duplicate_cards(ignore_board=False):
+    """清理题库里已经存在的重复题目，保留第一条。
+    ignore_board=True 时忽略板块字段差异（用于处理同一批内容被存进了不同拼写板块名的情况）"""
     seen = {}
     unique = []
     removed = 0
     for c in st.session_state.flashcards:
-        k = dedup_key(c.get("board", "商务英语/面接"), c["id"], c["japanese"], c["english_standard"])
+        k = dedup_key(c.get("board", "商务英语/面接"), c["id"], c["japanese"], c["english_standard"], ignore_board=ignore_board)
         if k not in seen:
             seen[k] = c
             unique.append(c)
         else:
             removed += 1
-            # 如果被删掉的这条在待复习清单里，把状态转移到保留下来的那条
             if c["uid"] in st.session_state.weak_uids:
                 st.session_state.weak_uids.discard(c["uid"])
                 st.session_state.weak_uids.add(seen[k]["uid"])
@@ -305,6 +306,26 @@ def cleanup_duplicate_cards():
     save_data(unique)
     save_weak(st.session_state.weak_uids)
     return removed
+
+
+def count_duplicates(ignore_board=False):
+    seen = set()
+    dup = 0
+    for c in st.session_state.flashcards:
+        k = dedup_key(c.get("board", "商务英语/面接"), c["id"], c["japanese"], c["english_standard"], ignore_board=ignore_board)
+        if k in seen:
+            dup += 1
+        else:
+            seen.add(k)
+    return dup
+
+
+def get_board_counts():
+    counts = {}
+    for c in st.session_state.flashcards:
+        b = c.get("board", "商务英语/面接")
+        counts[b] = counts.get(b, 0) + 1
+    return counts
 
 
 def build_backup_zip():
@@ -451,14 +472,27 @@ if uploaded_file is not None:
 
 st.sidebar.caption(f"当前题库总量：{len(st.session_state.flashcards)} 条")
 
+with st.sidebar.expander("🔍 查看板块分布 / 诊断重复"):
+    for b, cnt in get_board_counts().items():
+        st.write(f"「{b}」：{cnt} 条")
+    dup_same_board = count_duplicates(ignore_board=False)
+    dup_ignore_board = count_duplicates(ignore_board=True)
+    st.caption(f"同板块内重复：{dup_same_board} 条")
+    st.caption(f"忽略板块差异后重复：{dup_ignore_board} 条")
+    if dup_ignore_board > dup_same_board:
+        st.warning(
+            f"有 {dup_ignore_board - dup_same_board} 条内容其实是同一句话，"
+            f"但存在了拼写不同的板块名下——用下面「深度清理」可以合并。"
+        )
+
 col_clean, col_backup = st.sidebar.columns(2)
 with col_clean:
     if st.button("🧹 清理重复", use_container_width=True):
-        removed = cleanup_duplicate_cards()
+        removed = cleanup_duplicate_cards(ignore_board=False)
         if removed:
             st.sidebar.success(f"已清理 {removed} 条重复题目")
         else:
-            st.sidebar.info("没有发现重复题目")
+            st.sidebar.info("同板块内没有发现重复")
         st.rerun()
 with col_backup:
     st.download_button(
@@ -468,6 +502,14 @@ with col_backup:
         mime="application/zip",
         use_container_width=True,
     )
+
+if st.sidebar.button("🧹🧹 深度清理（忽略板块拼写差异）", use_container_width=True):
+    removed = cleanup_duplicate_cards(ignore_board=True)
+    if removed:
+        st.sidebar.success(f"已合并清理 {removed} 条重复题目（保留最早那条所属的板块）")
+    else:
+        st.sidebar.info("没有发现跨板块的重复")
+    st.rerun()
 
 st.sidebar.header("📌 待复习清单")
 weak_count = len(st.session_state.weak_uids)
