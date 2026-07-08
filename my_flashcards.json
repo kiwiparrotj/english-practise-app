@@ -1,0 +1,19 @@
+[
+    {
+        "id": 1,
+        "scene": "餐厅结账",
+        "japanese": "お会計をお願いします。",
+        "chinese": "请结账。",
+        "english_standard": "Check, please.",
+        "english_accepted": [
+            "check please",
+            "can i have the bill",
+            "bill please"
+        ],
+        "context_dialogue": {
+            "speaker_a": "Waitress: Did you enjoy your meal? Everything alright?",
+            "speaker_b": "You: [请说出结账语]"
+        },
+        "interval": 1
+    }
+]

@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": "2026-07-08 20:17",
+    "boards": [
+      "商务英语/面接"
+    ],
+    "semesters": [
+      "第三学期"
+    ],
+    "mode": "🃏 翻牌模式",
+    "correct": 1,
+    "wrong": 1,
+    "accuracy": 50,
+    "weak_count": 16,
+    "duration_min": 234
+  }
+]
