@@ -684,6 +684,22 @@ if not filtered_pool:
     st.warning("当前范围内没有题目，请结束本次学习后重新设置范围。")
     st.stop()
 
+_pool_board_counts = {}
+for _c in filtered_pool:
+    _b = _c.get("board", "商务英语/面接")
+    _pool_board_counts[_b] = _pool_board_counts.get(_b, 0) + 1
+_pool_board_summary = "、".join(f"{b}×{n}" for b, n in _pool_board_counts.items())
+st.caption(
+    f"🔧 本次范围：板块 [{'、'.join(selected_boards)}] ｜ 学期 [{'、'.join(selected_semesters)}] "
+    f"→ 实际抽题池 {len(filtered_pool)} 条（{_pool_board_summary}）"
+)
+if len(_pool_board_counts) > 1:
+    st.warning(
+        "⚠️ 抽题池里出现了不止一个板块，说明有些题目的「板块」标签跟你想的不一样"
+        "（很可能是之前深度清理时被合并到了错的板块下）。可以到侧边栏「🔍 查看板块分布」核对，"
+        "或用题目上的「✏️ 这题有错？直接改这一条」把它的板块改回来。"
+    )
+
 pool_uids = {c["uid"] for c in filtered_pool}
 
 if st.session_state.card_flip is None or st.session_state.card_flip["uid"] not in pool_uids:
@@ -750,8 +766,14 @@ def render_meta(card):
 def render_quick_edit(card, context_key):
     """直接修改当前正在看的这一条题目，按 uid 精确定位，不用去底部搜索（避免同编号多条内容时搜错）"""
     uid = card["uid"]
+    board_options = sorted(set(st.session_state.board_config.keys()) | {card.get("board", "商务英语/面接")})
     with st.expander("✏️ 这题有错？直接改这一条"):
         with st.form(key=f"quickedit_{context_key}_{uid}"):
+            new_board = st.selectbox(
+                "板块 board", board_options,
+                index=board_options.index(card.get("board", "商务英语/面接")),
+                key=f"qe_board_{context_key}_{uid}",
+            )
             new_id = st.number_input("编号 id", value=int(card["id"]), step=1, key=f"qe_id_{context_key}_{uid}")
             new_category = st.text_input("大类 category", value=card.get("category", ""), key=f"qe_cat_{context_key}_{uid}")
             new_japanese = st.text_area("日语 japanese", value=card.get("japanese", ""), height=70, key=f"qe_jp_{context_key}_{uid}")
@@ -761,6 +783,7 @@ def render_quick_edit(card, context_key):
             save_clicked = st.form_submit_button("💾 保存修改", use_container_width=True)
 
         if save_clicked:
+            card["board"] = new_board
             card["id"] = int(new_id)
             card["category"] = new_category.strip() or "未分类"
             card["japanese"] = new_japanese.strip()
@@ -1053,6 +1076,8 @@ with st.expander("🛠️ 发现题目有错？在这里搜索并单独修改或
         target = next(c for c in st.session_state.flashcards if c["uid"] == picked_uid)
 
         with st.form(key=f"edit_form_{picked_uid}"):
+            board_options2 = sorted(set(st.session_state.board_config.keys()) | {target.get("board", "商务英语/面接")})
+            new_board = st.selectbox("板块 board", board_options2, index=board_options2.index(target.get("board", "商务英语/面接")))
             new_id = st.number_input("编号 id", value=int(target["id"]), step=1)
             new_category = st.text_input("大类 category", value=target.get("category", ""))
             new_japanese = st.text_area("日语 japanese", value=target.get("japanese", ""), height=80)
@@ -1065,6 +1090,7 @@ with st.expander("🛠️ 发现题目有错？在这里搜索并单独修改或
             delete_clicked = col_delete.form_submit_button("🗑️ 删除此条", use_container_width=True)
 
         if save_clicked:
+            target["board"] = new_board
             target["id"] = int(new_id)
             target["category"] = new_category.strip() or "未分类"
             target["japanese"] = new_japanese.strip()
