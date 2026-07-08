@@ -19,6 +19,9 @@ import os
 import random
 import hashlib
 import time
+import re
+import io
+import zipfile
 from datetime import datetime
 
 # ------------------------------------------------------------------
@@ -211,9 +214,18 @@ def normalize_df_columns(df: pd.DataFrame):
     return df[EXPECTED_COLS]
 
 
+def normalize_text(s: str) -> str:
+    """去除多余空格并统一大小写，用于判断重复（不影响实际存储/显示的原文）"""
+    return re.sub(r"\s+", " ", (s or "").strip()).lower()
+
+
+def dedup_key(board, cid, japanese, english):
+    return (board, str(cid), normalize_text(japanese), normalize_text(english))
+
+
 def merge_new_cards(existing, new_df, board):
     existing_keys = set(
-        (c.get("board", "商务英语/面接"), str(c["id"]), c["japanese"].strip(), c["english_standard"].strip())
+        dedup_key(c.get("board", "商务英语/面接"), c["id"], c["japanese"], c["english_standard"])
         for c in existing
     )
     added, skipped, bad_rows = 0, 0, 0
@@ -231,7 +243,7 @@ def merge_new_cards(existing, new_df, board):
             bad_rows += 1
             continue
 
-        key = (board, str(cid), japanese, english)
+        key = dedup_key(board, cid, japanese, english)
         if key in existing_keys:
             skipped += 1
             continue
@@ -271,6 +283,38 @@ def masked_count_for(card, words):
     upper_bound = max(len(words) - 1, 1)
     n = min(1 + mastery, 4, upper_bound)
     return max(n, 1)
+
+
+def cleanup_duplicate_cards():
+    """清理题库里已经存在的重复题目（同板块+同编号+日语英语规整后一致），保留第一条"""
+    seen = {}
+    unique = []
+    removed = 0
+    for c in st.session_state.flashcards:
+        k = dedup_key(c.get("board", "商务英语/面接"), c["id"], c["japanese"], c["english_standard"])
+        if k not in seen:
+            seen[k] = c
+            unique.append(c)
+        else:
+            removed += 1
+            # 如果被删掉的这条在待复习清单里，把状态转移到保留下来的那条
+            if c["uid"] in st.session_state.weak_uids:
+                st.session_state.weak_uids.discard(c["uid"])
+                st.session_state.weak_uids.add(seen[k]["uid"])
+    st.session_state.flashcards = unique
+    save_data(unique)
+    save_weak(st.session_state.weak_uids)
+    return removed
+
+
+def build_backup_zip():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in [DB_PATH, WEAK_PATH, HISTORY_PATH, BOARD_CONFIG_PATH]:
+            if os.path.exists(path):
+                zf.write(path, arcname=os.path.basename(path))
+    buf.seek(0)
+    return buf
 
 
 # ------------------------------------------------------------------
@@ -406,6 +450,24 @@ if uploaded_file is not None:
             st.sidebar.success(msg)
 
 st.sidebar.caption(f"当前题库总量：{len(st.session_state.flashcards)} 条")
+
+col_clean, col_backup = st.sidebar.columns(2)
+with col_clean:
+    if st.button("🧹 清理重复", use_container_width=True):
+        removed = cleanup_duplicate_cards()
+        if removed:
+            st.sidebar.success(f"已清理 {removed} 条重复题目")
+        else:
+            st.sidebar.info("没有发现重复题目")
+        st.rerun()
+with col_backup:
+    st.download_button(
+        "📤 导出备份",
+        data=build_backup_zip(),
+        file_name=f"ecc_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+        mime="application/zip",
+        use_container_width=True,
+    )
 
 st.sidebar.header("📌 待复习清单")
 weak_count = len(st.session_state.weak_uids)
@@ -750,11 +812,14 @@ with tab_map["mask"]:
         else:
             display_tokens.append("[ _______ ]")
 
-    st.markdown("<div class='study-box'>", unsafe_allow_html=True)
-    st.markdown(f"**请补全下列句子（本题挖空 {len(masked_indices)} 处，先靠自己回忆）：**")
-    st.markdown(f"### {' '.join(display_tokens)}")
-    st.markdown(f"*日语提示：{card['japanese']}　｜　中文辅助：{card['chinese']}*")
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"""<div class='study-box'>
+        <b>请补全下列句子（本题挖空 {len(masked_indices)} 处，先靠自己回忆）：</b>
+        <h3>{' '.join(display_tokens)}</h3>
+        <p><i>日语提示：{card['japanese']}　｜　中文辅助：{card['chinese']}</i></p>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
     if masked_indices and not hint_shown:
         if st.button("💡 想不起来？给个首字母提示", key=f"hintbtn_{uid}"):
@@ -793,13 +858,18 @@ with tab_map["mask"]:
         else:
             set_mastery(card, -1)
 
+        st.write("")
+        if st.button("➡️ 下一题", key=f"next_mask_top_{uid}", type="primary", use_container_width=True):
+            pick_card("card_mask", filtered_pool, prefer_weak=True, exclude_uid=uid)
+            st.rerun()
+
         st.markdown(f"<div class='answer-box'><b>完整原文：</b>{card['english_standard']}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='lecture-box'><b>名师解说：</b>{card['teacher_lecture']}</div>", unsafe_allow_html=True)
-
-    st.write("")
-    if st.button("➡️ 换一题", key=f"next_mask_{uid}", type="primary"):
-        pick_card("card_mask", filtered_pool, prefer_weak=True, exclude_uid=uid)
-        st.rerun()
+    else:
+        st.write("")
+        if st.button("➡️ 跳过，换一题", key=f"next_mask_{uid}"):
+            pick_card("card_mask", filtered_pool, prefer_weak=True, exclude_uid=uid)
+            st.rerun()
 
 # ==================================================================
 # 模式 3：上下文场景本意选择
