@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ECC 商务英语 / 就职面试 复习系统 v5
+ECC 商务英语 / 日常英语 复习系统 v5
 =================================
 流程：① 设置画面选板块/学期/大类 + 选要玩的游戏 → ② 点"开始"才计时 → ③ 进入游戏
 - 🃏 翻牌模式：点"我会了/还不熟"立即自动换下一题；"还不熟"自动计入待复习清单+重置熟练度
@@ -433,14 +433,29 @@ def pick_card(state_key, pool, prefer_weak=False, exclude_uid=None):
         weak_in_pool = [c for c in pool if c["uid"] in st.session_state.weak_uids]
         if weak_in_pool:
             candidates = weak_in_pool
+
+    # 避免最近才出现过的题目马上又被抽到，减少"总是重复同一批"的感觉
+    history_key = f"{state_key}_history"
+    recent = st.session_state.get(history_key, [])
+    exclude_set = set(recent)
     if exclude_uid:
-        narrowed = [c for c in candidates if c["uid"] != exclude_uid]
-        if narrowed:
-            candidates = narrowed
+        exclude_set.add(exclude_uid)
+
+    narrowed = [c for c in candidates if c["uid"] not in exclude_set]
+    if narrowed:
+        candidates = narrowed
+    elif exclude_uid:
+        narrowed2 = [c for c in candidates if c["uid"] != exclude_uid]
+        if narrowed2:
+            candidates = narrowed2
     if not candidates:
         candidates = pool
-    st.session_state[state_key] = random.choice(candidates)
+
+    chosen = random.choice(candidates)
+    st.session_state[state_key] = chosen
     st.session_state[f"{state_key}_start"] = time.time()
+    recent.append(chosen["uid"])
+    st.session_state[history_key] = recent[-5:]
 
 
 def clear_mode_state(uid_prefix_list):
@@ -764,7 +779,7 @@ def render_meta(card):
 
 
 def render_quick_edit(card, context_key):
-    """直接修改当前正在看的这一条题目，按 uid 精确定位，不用去底部搜索（避免同编号多条内容时搜错）"""
+    """直接修改/删除当前正在看的这一条题目，按 uid 精确定位，不用去底部搜索（避免同编号多条内容时搜错）"""
     uid = card["uid"]
     board_options = sorted(set(st.session_state.board_config.keys()) | {card.get("board", "商务英语/面接")})
     with st.expander("✏️ 这题有错？直接改这一条"):
@@ -780,7 +795,9 @@ def render_quick_edit(card, context_key):
             new_chinese = st.text_area("中文 chinese", value=card.get("chinese", ""), height=70, key=f"qe_cn_{context_key}_{uid}")
             new_english = st.text_area("英语 english_standard", value=card.get("english_standard", ""), height=70, key=f"qe_en_{context_key}_{uid}")
             new_lecture = st.text_area("名师解说 teacher_lecture", value=card.get("teacher_lecture", ""), height=90, key=f"qe_lec_{context_key}_{uid}")
-            save_clicked = st.form_submit_button("💾 保存修改", use_container_width=True)
+            col_s, col_d = st.columns(2)
+            save_clicked = col_s.form_submit_button("💾 保存修改", use_container_width=True)
+            delete_clicked = col_d.form_submit_button("🗑️ 删除此条", use_container_width=True)
 
         if save_clicked:
             card["board"] = new_board
@@ -797,8 +814,21 @@ def render_quick_edit(card, context_key):
             save_data(st.session_state.flashcards)
             st.success("✅ 已保存，点「换一题/下一题」后新内容就会用上。")
 
+        if delete_clicked:
+            remove_from_weak(card["uid"])
+            st.session_state.flashcards = [c for c in st.session_state.flashcards if c["uid"] != card["uid"]]
+            save_data(st.session_state.flashcards)
+            st.success("🗑️ 已删除该条题目。")
+            return True
+    return False
 
-def render_timer(state_key, label, color):
+
+def render_timer(state_key, label, color, frozen_seconds=None):
+    if frozen_seconds is not None:
+        m = int(frozen_seconds // 60)
+        s = int(frozen_seconds % 60)
+        st.caption(f"{label}⏹ {m:02d}:{s:02d}（已完成，用时定格）")
+        return
     start_ms = int(st.session_state.get(f"{state_key}_start", time.time()) * 1000)
     components.html(
         f"""
@@ -828,8 +858,9 @@ with tab_map["flip"]:
     card = st.session_state.card_flip
     uid = card["uid"]
     render_meta(card)
-    render_quick_edit(card, "flip")
-    render_timer("card_flip", "⏱ 本题用时　", "#e08a2c")
+    if render_quick_edit(card, "flip"):
+        pick_card("card_flip", filtered_pool)
+        st.rerun()
 
     japanese_html = card["japanese"].replace("'", "&#39;")
     chinese_html = card["chinese"].replace("'", "&#39;")
@@ -897,6 +928,8 @@ with tab_map["flip"]:
             pick_card("card_flip", filtered_pool, exclude_uid=uid)
             st.rerun()
 
+    render_timer("card_flip", "⏱ 本题用时　", "#e08a2c")
+
 # ==================================================================
 # 模式 2：智能遮罩填空
 # ==================================================================
@@ -904,8 +937,9 @@ with tab_map["mask"]:
     card = st.session_state.card_mask
     uid = card["uid"]
     render_meta(card)
-    render_quick_edit(card, "mask")
-    render_timer("card_mask", "⏱ 本题用时　", "#e08a2c")
+    if render_quick_edit(card, "mask"):
+        pick_card("card_mask", filtered_pool, prefer_weak=True)
+        st.rerun()
 
     if uid in st.session_state.weak_uids:
         st.markdown("<span class='weak-badge'>📌 来自待复习清单</span>", unsafe_allow_html=True)
@@ -960,8 +994,11 @@ with tab_map["mask"]:
             user_inputs.append(val)
 
     checked_key = f"checked_{uid}"
+    elapsed_key = f"elapsed_mask_{uid}"
     if st.button("✅ 验证答案", key=f"verify_{uid}"):
         st.session_state[checked_key] = True
+        if elapsed_key not in st.session_state:
+            st.session_state[elapsed_key] = time.time() - st.session_state.get("card_mask_start", time.time())
 
     if st.session_state.get(checked_key):
         results = []
@@ -991,11 +1028,13 @@ with tab_map["mask"]:
 
         st.markdown(f"<div class='answer-box'><b>完整原文：</b>{card['english_standard']}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='lecture-box'><b>名师解说：</b>{card['teacher_lecture']}</div>", unsafe_allow_html=True)
+        render_timer("card_mask", "⏱ 本题用时　", "#e08a2c", frozen_seconds=st.session_state.get(elapsed_key))
     else:
         st.write("")
         if st.button("➡️ 跳过，换一题", key=f"next_mask_{uid}"):
             pick_card("card_mask", filtered_pool, prefer_weak=True, exclude_uid=uid)
             st.rerun()
+        render_timer("card_mask", "⏱ 本题用时　", "#e08a2c")
 
 # ==================================================================
 # 模式 3：上下文场景本意选择
@@ -1004,22 +1043,23 @@ with tab_map["choice"]:
     card = st.session_state.card_choice
     uid = card["uid"]
     render_meta(card)
-    render_quick_edit(card, "choice")
-    render_timer("card_choice", "⏱ 本题用时　", "#e08a2c")
+    if render_quick_edit(card, "choice"):
+        pick_card("card_choice", filtered_pool)
+        st.rerun()
 
     st.markdown(
         f"<div class='study-box'><h2 style='text-align:center; margin:0;'>{card['english_standard']}</h2></div>",
         unsafe_allow_html=True,
     )
-    st.caption("请选出与上句最贴切的中文/日语场景本意：")
+    st.caption("请选出与上句最贴切的中文/日语场景本意（四选一）：")
 
     pool_key = f"options_{uid}"
     if pool_key not in st.session_state:
         card_board = card.get("board", "商务英语/面接")
         distractor_candidates = [c for c in filtered_pool if c["uid"] != uid and c.get("board", "商务英语/面接") == card_board]
-        if not distractor_candidates:
+        if len(distractor_candidates) < 3:
             distractor_candidates = [c for c in filtered_pool if c["uid"] != uid]
-        n_distractors = min(2, len(distractor_candidates))
+        n_distractors = min(3, len(distractor_candidates))
         distractors = random.sample(distractor_candidates, n_distractors) if n_distractors else []
         options = [card["japanese"]] + [d["japanese"] for d in distractors]
         random.shuffle(options)
@@ -1030,8 +1070,11 @@ with tab_map["choice"]:
     selected = st.radio("选项：", options, key=choice_key, index=None)
 
     answered_key = f"answered_{uid}"
+    elapsed_key = f"elapsed_choice_{uid}"
     if st.button("✅ 提交答案", key=f"submit_{uid}", use_container_width=True):
         st.session_state[answered_key] = True
+        if elapsed_key not in st.session_state:
+            st.session_state[elapsed_key] = time.time() - st.session_state.get("card_choice_start", time.time())
 
     if st.session_state.get(answered_key):
         is_correct = selected == card["japanese"]
@@ -1048,65 +1091,5 @@ with tab_map["choice"]:
         pick_card("card_choice", filtered_pool, exclude_uid=uid)
         st.rerun()
 
-# ==================================================================
-# 🛠️ 数据管理：搜索并单条修改 / 删除题目
-# ==================================================================
-st.write("")
-st.divider()
-with st.expander("🛠️ 发现题目有错？在这里搜索并单独修改或删除一条"):
-    search_kw = st.text_input("按编号 / 日语 / 中文 / 英语关键字搜索", key="edit_search")
-    matches = []
-    if search_kw.strip():
-        kw = search_kw.strip().lower()
-        for c in st.session_state.flashcards:
-            haystack = f"{c['id']} {c.get('japanese','')} {c.get('chinese','')} {c.get('english_standard','')}".lower()
-            if kw in haystack:
-                matches.append(c)
+    render_timer("card_choice", "⏱ 本题用时　", "#e08a2c", frozen_seconds=st.session_state.get(elapsed_key) if st.session_state.get(answered_key) else None)
 
-    if search_kw.strip() and not matches:
-        st.caption("没有找到符合的题目。")
-
-    if matches:
-        options_map = {
-            f"[{c.get('board','')}] #{c['id']} ｜ {c['japanese'][:20]} ｜ {c['english_standard'][:30]}": c["uid"]
-            for c in matches
-        }
-        picked_label = st.selectbox("选择要修改的题目", list(options_map.keys()), key="edit_pick")
-        picked_uid = options_map[picked_label]
-        target = next(c for c in st.session_state.flashcards if c["uid"] == picked_uid)
-
-        with st.form(key=f"edit_form_{picked_uid}"):
-            board_options2 = sorted(set(st.session_state.board_config.keys()) | {target.get("board", "商务英语/面接")})
-            new_board = st.selectbox("板块 board", board_options2, index=board_options2.index(target.get("board", "商务英语/面接")))
-            new_id = st.number_input("编号 id", value=int(target["id"]), step=1)
-            new_category = st.text_input("大类 category", value=target.get("category", ""))
-            new_japanese = st.text_area("日语 japanese", value=target.get("japanese", ""), height=80)
-            new_chinese = st.text_area("中文 chinese", value=target.get("chinese", ""), height=80)
-            new_english = st.text_area("英语 english_standard", value=target.get("english_standard", ""), height=80)
-            new_lecture = st.text_area("名师解说 teacher_lecture", value=target.get("teacher_lecture", ""), height=100)
-
-            col_save, col_delete = st.columns(2)
-            save_clicked = col_save.form_submit_button("💾 保存修改", use_container_width=True)
-            delete_clicked = col_delete.form_submit_button("🗑️ 删除此条", use_container_width=True)
-
-        if save_clicked:
-            target["board"] = new_board
-            target["id"] = int(new_id)
-            target["category"] = new_category.strip() or "未分类"
-            target["japanese"] = new_japanese.strip()
-            target["chinese"] = new_chinese.strip()
-            target["english_standard"] = new_english.strip()
-            target["teacher_lecture"] = new_lecture.strip()
-            new_uid = make_uid(target)
-            if new_uid != target["uid"]:
-                remove_from_weak(target["uid"])
-                target["uid"] = new_uid
-            save_data(st.session_state.flashcards)
-            st.success("✅ 已保存修改，刷新页面后其他模式会用上新内容。")
-
-        if delete_clicked:
-            remove_from_weak(target["uid"])
-            st.session_state.flashcards = [c for c in st.session_state.flashcards if c["uid"] != target["uid"]]
-            save_data(st.session_state.flashcards)
-            st.success("🗑️ 已删除该条题目。")
-            st.rerun()
