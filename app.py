@@ -95,8 +95,12 @@ st.markdown(
 
     .study-box {
         background: linear-gradient(135deg, #ffffff, #f4f5ff); border-radius: 20px;
-        padding: 28px 32px; box-shadow: 0 8px 24px rgba(108, 99, 255, 0.12);
-        border: 1px solid #eceafd; margin-bottom: 18px;
+        padding: 18px 24px; box-shadow: 0 8px 24px rgba(108, 99, 255, 0.12);
+        border: 1px solid #eceafd; margin-bottom: 12px;
+    }
+    .stButton > button[kind="primary"] {
+        font-size: 1.15rem !important; padding: 14px 22px !important;
+        border-radius: 14px !important; font-weight: 800 !important;
     }
     .answer-box {
         background: linear-gradient(135deg, #eafff1, #f5fffa); border-radius: 16px;
@@ -369,13 +373,30 @@ def build_backup_zip():
 if "flashcards" not in st.session_state:
     data = load_data()
     changed = False
+    legacy_weak = load_weak()
+    weak_changed = False
     for c in data:
+        old_uid = c.get("uid")
+        if not c.get("board"):
+            legacy = c.get("section")  # 早期版本用过 'section' 这个字段名
+            c["board"] = legacy if legacy else "商务英语/面接"
+            changed = True
         if "mastery" not in c:
             c["mastery"] = 0
             changed = True
+        expected_uid = make_uid(c)
+        if old_uid != expected_uid:
+            c["uid"] = expected_uid
+            changed = True
+            if old_uid in legacy_weak:
+                legacy_weak.discard(old_uid)
+                legacy_weak.add(expected_uid)
+                weak_changed = True
     st.session_state.flashcards = data
     if changed:
         save_data(data)
+    if weak_changed:
+        save_weak(legacy_weak)
 
 if "board_config" not in st.session_state:
     st.session_state.board_config = load_board_config()
@@ -608,7 +629,7 @@ if not st.session_state.flashcards:
     st.info("目前题库为空，请先在左侧上传 CSV 题库文件。")
     st.stop()
 
-all_boards = sorted(set(board_config.keys()) | set(c.get("board", "") for c in st.session_state.flashcards))
+all_boards = sorted(set(board_config.keys()) | set(c.get("board", "商务英语/面接") for c in st.session_state.flashcards))
 all_semesters = ["第一学期", "第二学期", "第三学期", "第四学期", "其他"]
 all_categories = sorted(set(c.get("category", "未分类") for c in st.session_state.flashcards))
 
@@ -972,6 +993,11 @@ with tab_map["mask"]:
         else:
             display_tokens.append("[ _______ ]")
 
+    if masked_indices and not hint_shown:
+        if st.button("💡 想不起来？给个首字母提示", key=f"hintbtn_{uid}"):
+            st.session_state[hint_shown_key] = True
+            st.rerun()
+
     st.markdown(
         f"""<div class='study-box'>
         <b>请补全下列句子（本题挖空 {len(masked_indices)} 处，先靠自己回忆）：</b>
@@ -981,16 +1007,18 @@ with tab_map["mask"]:
         unsafe_allow_html=True,
     )
 
-    if masked_indices and not hint_shown:
-        if st.button("💡 想不起来？给个首字母提示", key=f"hintbtn_{uid}"):
-            st.session_state[hint_shown_key] = True
-            st.rerun()
-
-    input_cols = st.columns(len(masked_indices)) if masked_indices else []
+    if masked_indices:
+        ratios = [1] * len(masked_indices) + [max(len(masked_indices), 1)]
+        input_cols = st.columns(ratios)
+    else:
+        input_cols = []
     user_inputs = []
     for pos, idx in enumerate(masked_indices):
         with input_cols[pos]:
-            val = st.text_input(f"空格 {pos + 1}", key=f"blank_{uid}_{idx}")
+            val = st.text_input(
+                f"空格 {pos + 1}", key=f"blank_{uid}_{idx}",
+                label_visibility="collapsed", placeholder=f"#{pos + 1}",
+            )
             user_inputs.append(val)
 
     checked_key = f"checked_{uid}"
